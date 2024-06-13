@@ -46,8 +46,8 @@ try:
     sel.register(lSock, selectors.EVENT_READ, data=None)
 
     while True:
-        events = sel.select(timeout=0.2)
-        buffer = ["-", "\\", "|", "/"][round(time.time()//0.2 % 4)]
+        events = sel.select(timeout=0.5)
+        buffer = ["-", "\\", "|", "/"][round(time.time()//0.5 % 4)]
         print(f"The server is running [{buffer}] and has served {cookieCount} cookie(s) so far", end="\r")
         if not events:
             continue

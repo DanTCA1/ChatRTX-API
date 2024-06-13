@@ -1,3 +1,10 @@
+"""# Chat with RTX API
+
+An API to mesh with 'Chat with RTX', and AI model made by NVIDIA.
+
+IMPORTANT: This API will work ONLY if Chat with RTX was run with ChatRTX_Runner, our modified bootloader.
+"""
+
 import requests
 import random
 import string
@@ -6,6 +13,7 @@ import json
 import os
 import socket
 import time
+import typing
 from threading import Thread
 from multiprocessing import Queue
 
@@ -21,7 +29,7 @@ print(key_path)
 print(ca_bundle)
 print()
 
-def find_ChatRTX_port():
+def _find_ChatRTX_port():
     global port
     connections = psutil.net_connections(kind='inet')
     for host in connections:
@@ -40,7 +48,7 @@ def find_ChatRTX_port():
         except Exception as e:
             pass
 
-def get_ChatRTX_cookie():
+def _get_ChatRTX_cookie():
     global cookie
     try:
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -50,7 +58,7 @@ def get_ChatRTX_cookie():
     except:
         pass
 
-def listen_for_updates(session_hash, message):
+def _listen_for_updates(session_hash, message):
     url = f"https://127.0.0.1:{port}/queue/data?session_hash={session_hash}"
     response = requests.get(url, stream=True, cert=(cert_path, key_path), verify=ca_bundle, cookies={"_s_chat_":cookie})
     for line in response.iter_lines():
@@ -61,13 +69,12 @@ def listen_for_updates(session_hash, message):
             try:
                 if data['output']['data'][0][0][0] == message and data['output']['data'][0][0][1] != None:
                     return data['output']['data'][0][0][1]
-                # return 1
                 else:
                     return session_hash
             except: pass
     return session_hash
 
-def cycle(session_hash, jsonReq, message, queue):
+def _cycle(session_hash, jsonReq, message, queue):
     """
     Sends a request and then waits for the server to respond using the data in jsonReq
     """
@@ -79,11 +86,11 @@ def cycle(session_hash, jsonReq, message, queue):
     json_string = json.dumps(jsonReq)
 
     requests.post(url, data=json_string, cert=(cert_path, key_path), verify=ca_bundle, cookies={"_s_chat_":cookie})
-    response = listen_for_updates(session_hash, message)
+    response = _listen_for_updates(session_hash, message)
     jsonReq["fn_index"] = jsonReq["fn_index"] + 1
     return response
 
-def send_message_sync(message, queue):
+def _send_message_sync(message, contextList, queue):
     if message == "":
         queue.put(("error", "ChatRTX cannot process a blank request"))
         return
@@ -100,25 +107,24 @@ def send_message_sync(message, queue):
     
     # Starting up the connection with ChatRTX
     for _ in range(3):
-        cycle(session_hash, jsonReq, message, queue)
+        _cycle(session_hash, jsonReq, message, queue)
 
     # Sending ChatRTX the prompt
-    jsonReq["data"] = [message, [], "Folder Path", "Mistral 7B int4", None]
-    cycle(session_hash, jsonReq, message, queue)
+    jsonReq["data"] = [message, contextList, "Folder Path", "Mistral 7B int4", None]
+    _cycle(session_hash, jsonReq, message, queue)
 
     # Waiting for it to process
-    jsonReq["data"] = [message, []]
-    cycle(session_hash, jsonReq, message, queue)
+    jsonReq["data"] = [message, contextList]
+    _cycle(session_hash, jsonReq, message, queue)
 
     # Receiving data back from chatRTX
-    jsonReq["data"] = [[[message, None]], None]
-    response = cycle(session_hash, jsonReq, message, queue)
+    contextList.append([message, None])
+    jsonReq["data"] = [contextList, None]
+    response = _cycle(session_hash, jsonReq, message, queue)
 
     # Closing the session with chatRTX (or something)
     jsonReq["data"] = []
-    cycle(session_hash, jsonReq, message, queue)
-
-    print(" " * 19, end="\r")
+    _cycle(session_hash, jsonReq, message, queue)
 
     if response == session_hash:
         queue.put(("error", "No data could be received from the AI"))
@@ -126,39 +132,55 @@ def send_message_sync(message, queue):
         queue.put(("response", response))
 
 
+# ================================================
 # The 2 functions that are called on by the user
-def send_msg(message):
+
+def send_msg(message: str, context: dict = {}) -> Queue:
+    """Send a message to chat rtx to process.
+
+    $$ Context currently doesn't work, as even though their website adds that metadata, it's never called upon $$
+
+    Args: 
+        message: The message to sent to the AI
+        context: Context from previous AI prompts and responses
+
+    Returns:
+        Object to be passed to read_status() from time to time
+
+    Context is a dictionary, with the the key being the user prompt, and the value being the AI response
     """
-    Send a message to chat rtx to process.
-    Args: message
-    Returns: Object to be passed to read_status() from time to time
-    """
+
+    contextList = []
+    for i in context:
+        contextList.append(list(i))
     
     result_queue = Queue()
-    thread = Thread(target=send_message_sync, args=[message, result_queue])
+    thread = Thread(target=_send_message_sync, args=[message, contextList, result_queue])
     thread.start()
     return result_queue
 
-def read_status(obj):
-    """
-    Checks if anything has changed, and returns the status message if it has, otherwise None
-    Args: obj
+def read_status(obj: object) -> typing.Optional[tuple]:
+    """Checks if anything has changed, and returns the status message if it has, otherwise None
 
-    obj is the object that is returned by send_msg()
-    Returns: status or None
+    Args: 
+        obj: object that is returned by send_msg()
+    Returns: 
+        status(tuple) or None
     """
     if not obj.empty():
         return obj.get()
-    
+    return None
 
+# =========================
 # Init stuffs
+
 print("Finding 'Chat with RTX' server port...")
-find_ChatRTX_port()
+_find_ChatRTX_port()
 if not port:
     print("Failed to find port. Retrying... (If this script is being run on startup, this message is normal)")
     for i in range(60):
         time.sleep(0.75)
-        find_ChatRTX_port()
+        _find_ChatRTX_port()
         if port:
             break
         print(f"Failed to find port. Retrying ({i + 1}/60)", end="\r")
@@ -169,7 +191,7 @@ if not port:
     )
 print(f"Server port found on\033[96m port {port}\33[0m")
 print("Getting 'Chat with RTX' authorization cookie...")
-get_ChatRTX_cookie()
+_get_ChatRTX_cookie()
 if not cookie:
     raise AttributeError(
         "Failed to get cookie for 'Chat with RTX'. Ensure that 'Chat with RTX' was run using our modified loader."
